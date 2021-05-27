@@ -23,7 +23,7 @@ fn main() {
 }
 
 fn build_root_widget() -> impl Widget<EditorState> {
-    let textbox = TextBox::new()
+    let textbox = TextBox::multiline()
         .fix_width(TEXT_BOX_WIDTH)
         .fix_height(TEXT_BOX_HEIGHT)
         .lens(EditorState::content);
