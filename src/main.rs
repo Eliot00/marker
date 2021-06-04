@@ -108,7 +108,10 @@ fn file_menu() -> Menu<AppState> {
                 },
             ),
         )
-        .entry(platform_menus::mac::file::save())
+        .entry(
+            platform_menus::mac::file::save()
+                .enabled_if(|data: &AppState, _env: &Env| data.path.is_some()),
+        )
         .entry(
             MenuItem::new(LocalizedString::new("common-menu-file-save-as"))
                 .on_activate(|ctx, _, _| {
