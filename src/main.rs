@@ -1,265 +1,444 @@
-// On Windows platform, don't show a console when opening the app.
-#![windows_subsystem = "windows"]
-
-use druid::text::{AttributesAdder, RichText, RichTextBuilder};
-use druid::widget::prelude::*;
-use druid::widget::{Container, Controller, LineBreaking, RawLabel, Scroll, Split, TextBox};
-use druid::{
-    commands, platform_menus, AppDelegate, AppLauncher, Color, Command, Data, DelegateCtx,
-    FileDialogOptions, FileSpec, FontFamily, FontStyle, FontWeight, Handled, Lens, LocalizedString,
-    Menu, MenuItem, Selector, SysMods, Target, Widget, WidgetExt, WindowDesc, WindowId,
+use fltk::{
+    app, dialog,
+    enums::{CallbackTrigger, Color, Event, Font, FrameType, Shortcut},
+    menu,
+    prelude::*,
+    printer, text, window,
 };
-use pulldown_cmark::{Event as ParseEvent, HeadingLevel, Options, Parser, Tag};
-use std::fs;
-use std::path::Path;
+use std::path::PathBuf;
+use std::{
+    error,
+    ops::{Deref, DerefMut},
+    path,
+};
 
-const WINDOW_TITLE: LocalizedString<AppState> = LocalizedString::new("Marker");
-const MARKDOWN_FILE: FileSpec = FileSpec::new("Markdown file", &["md"]);
-const BLOCKQUOTE_COLOR: Color = Color::grey8(0x88);
-const LINK_COLOR: Color = Color::rgb8(0, 0, 0xEE);
-const OPEN_LINK: Selector<String> = Selector::new("druid-example.open-link");
-
-fn main() {
-    let main_window = WindowDesc::new(build_root_widget())
-        .title(WINDOW_TITLE)
-        .menu(make_menu)
-        .window_size((1000.0, 900.0));
-
-    let initial_state = AppState {
-        raw_text: "".into(),
-        path: None,
-        rendered: rebuild_rendered_text(""),
-    };
-
-    AppLauncher::with_window(main_window)
-        .delegate(Delegate)
-        .log_to_console()
-        .launch(initial_state)
-        .expect("Failed to launch application");
+#[derive(Copy, Clone)]
+pub enum Message {
+    Changed,
+    New,
+    Open,
+    Save,
+    SaveAs,
+    Print,
+    Quit,
+    Cut,
+    Copy,
+    Paste,
+    About,
 }
 
-#[derive(Clone, Data, Lens)]
-struct AppState {
-    raw_text: String,
-    rendered: RichText,
-    path: Option<String>,
-}
-
-impl AppState {
-    fn save(&self) {
-        self.save_as(self.path.as_ref().unwrap());
-    }
-
-    fn save_as<P: AsRef<Path>>(&self, path: P) {
-        fs::write(path, &self.raw_text).expect("Unable to write");
-    }
-}
-
-/// A controller that rebuilds the preview when edits occur
-struct RichTextRebuilder;
-
-impl<W: Widget<AppState>> Controller<AppState, W> for RichTextRebuilder {
-    fn event(
-        &mut self,
-        child: &mut W,
-        ctx: &mut EventCtx,
-        event: &Event,
-        data: &mut AppState,
-        env: &Env,
-    ) {
-        let pre_data = data.raw_text.to_owned();
-        child.event(ctx, event, data, env);
-        if !data.raw_text.same(&pre_data) {
-            data.rendered = rebuild_rendered_text(&data.raw_text);
-        }
-    }
-}
-
-struct Delegate;
-
-impl AppDelegate<AppState> for Delegate {
-    fn command(
-        &mut self,
-        _ctx: &mut DelegateCtx,
-        _target: Target,
-        cmd: &Command,
-        data: &mut AppState,
-        _env: &Env,
-    ) -> Handled {
-        if let Some(info) = cmd.get(commands::OPEN_FILE) {
-            data.raw_text = fs::read_to_string(info.path()).unwrap();
-            data.path = Some(info.path().to_str().unwrap().to_string());
-            Handled::Yes
-        } else if cmd.is(commands::SAVE_FILE) {
-            data.save();
-            Handled::Yes
-        } else if let Some(info) = cmd.get(commands::SAVE_FILE_AS) {
-            data.save_as(info.path());
-            Handled::Yes
-        } else {
-            Handled::No
-        }
-    }
-}
-
-fn build_root_widget() -> impl Widget<AppState> {
-    let textbox = TextBox::multiline()
-        .lens(AppState::raw_text)
-        .controller(RichTextRebuilder);
-
-    let rendered = Scroll::new(
-        RawLabel::new()
-            .with_text_color(Color::BLACK)
-            .with_line_break_mode(LineBreaking::WordWrap)
-            .lens(AppState::rendered)
-            .expand_width(),
-    )
-    .vertical()
-    .background(Color::grey8(222))
-    .expand();
-
-    Container::new(
-        Split::columns(textbox, rendered)
-            .split_point(0.5)
-            .draggable(true)
-            .solid_bar(true)
-            .min_size(300.0, 300.0),
+pub fn center() -> (i32, i32) {
+    (
+        (app::screen_size().0 / 2.0) as i32,
+        (app::screen_size().1 / 2.0) as i32,
     )
 }
 
-/// Parse a markdown string and generate a `RichText` object with
-/// the appropriate attributes.
-fn rebuild_rendered_text(text: &str) -> RichText {
-    let mut current_pos = 0;
-    let mut builder = RichTextBuilder::new();
-    let mut tag_stack = Vec::new();
+pub struct MyEditor {
+    editor: text::TextEditor,
+}
 
-    let parser = Parser::new_ext(text, Options::ENABLE_STRIKETHROUGH);
-    for event in parser {
-        match event {
-            ParseEvent::Start(tag) => {
-                tag_stack.push((current_pos, tag));
+impl MyEditor {
+    pub fn new(buf: text::TextBuffer) -> Self {
+        let mut editor = text::TextEditor::new(5, 35, 790, 560, "");
+        editor.set_buffer(Some(buf));
+
+        #[cfg(target_os = "macos")]
+        editor.resize(5, 5, 790, 590);
+
+        editor.set_scrollbar_size(15);
+        editor.set_text_font(Font::Courier);
+        editor.set_linenumber_width(32);
+        editor.set_linenumber_fgcolor(Color::from_u32(0x008b_8386));
+        editor.set_trigger(CallbackTrigger::Changed);
+
+        Self { editor }
+    }
+}
+
+impl Deref for MyEditor {
+    type Target = text::TextEditor;
+
+    fn deref(&self) -> &Self::Target {
+        &self.editor
+    }
+}
+
+impl DerefMut for MyEditor {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.editor
+    }
+}
+
+pub struct MyMenu {
+    menu: menu::SysMenuBar,
+}
+
+impl MyMenu {
+    pub fn new(s: &app::Sender<Message>) -> Self {
+        let mut menu = menu::SysMenuBar::default().with_size(800, 35);
+        menu.set_frame(FrameType::FlatBox);
+        menu.add_emit(
+            "&File/New...\t",
+            Shortcut::Ctrl | 'n',
+            menu::MenuFlag::Normal,
+            *s,
+            Message::New,
+        );
+
+        menu.add_emit(
+            "&File/Open...\t",
+            Shortcut::Ctrl | 'o',
+            menu::MenuFlag::Normal,
+            *s,
+            Message::Open,
+        );
+
+        menu.add_emit(
+            "&File/Save\t",
+            Shortcut::Ctrl | 's',
+            menu::MenuFlag::Normal,
+            *s,
+            Message::Save,
+        );
+
+        menu.add_emit(
+            "&File/Save as...\t",
+            Shortcut::Ctrl | 'w',
+            menu::MenuFlag::Normal,
+            *s,
+            Message::SaveAs,
+        );
+
+        menu.add_emit(
+            "&File/Print...\t",
+            Shortcut::Ctrl | 'p',
+            menu::MenuFlag::MenuDivider,
+            *s,
+            Message::Print,
+        );
+
+        menu.add_emit(
+            "&File/Quit\t",
+            Shortcut::Ctrl | 'q',
+            menu::MenuFlag::Normal,
+            *s,
+            Message::Quit,
+        );
+
+        menu.add_emit(
+            "&Edit/Cut\t",
+            Shortcut::Ctrl | 'x',
+            menu::MenuFlag::Normal,
+            *s,
+            Message::Cut,
+        );
+
+        menu.add_emit(
+            "&Edit/Copy\t",
+            Shortcut::Ctrl | 'c',
+            menu::MenuFlag::Normal,
+            *s,
+            Message::Copy,
+        );
+
+        menu.add_emit(
+            "&Edit/Paste\t",
+            Shortcut::Ctrl | 'v',
+            menu::MenuFlag::Normal,
+            *s,
+            Message::Paste,
+        );
+
+        menu.add_emit(
+            "&Help/About\t",
+            Shortcut::None,
+            menu::MenuFlag::Normal,
+            *s,
+            Message::About,
+        );
+
+        Self { menu }
+    }
+}
+
+pub struct MyApp {
+    app: app::App,
+    modified: bool,
+    filename: Option<PathBuf>,
+    r: app::Receiver<Message>,
+    main_win: window::Window,
+    menu: MyMenu,
+    buf: text::TextBuffer,
+    editor: MyEditor,
+    printable: text::TextDisplay,
+}
+
+impl MyApp {
+    pub fn new(args: Vec<String>) -> Self {
+        let app = app::App::default().with_scheme(app::Scheme::Gtk);
+        app::background(211, 211, 211);
+        let (s, r) = app::channel::<Message>();
+        let mut buf = text::TextBuffer::default();
+        buf.set_tab_distance(4);
+        let mut main_win = window::Window::default()
+            .with_size(800, 600)
+            .center_screen()
+            .with_label("Marker");
+        let menu = MyMenu::new(&s);
+        let modified = false;
+        menu.menu.find_item("&File/Save\t").unwrap().deactivate();
+        let mut editor = MyEditor::new(buf.clone());
+        editor.emit(s, Message::Changed);
+        main_win.make_resizable(true);
+        // only resize editor, not the menu bar
+        main_win.resizable(&*editor);
+        main_win.end();
+        main_win.show();
+        main_win.set_callback(move |_| {
+            if app::event() == Event::Close {
+                s.send(Message::Quit);
             }
-            ParseEvent::Text(txt) => {
-                builder.push(&txt);
-                current_pos += txt.len();
-            }
-            ParseEvent::End(end_tag) => {
-                let (start_off, tag) = tag_stack
-                    .pop()
-                    .expect("parser does not return unbalanced tags");
-                assert_eq!(end_tag, tag, "mismatched tags?");
-                add_attribute_for_tag(
-                    &tag,
-                    builder.add_attributes_for_range(start_off..current_pos),
-                );
-                if add_newline_after_tag(&tag) {
-                    builder.push("\n\n");
-                    current_pos += 2;
+        });
+        let filename = if args.len() > 1 {
+            let file = path::Path::new(&args[1]);
+            assert!(
+                file.exists() && file.is_file(),
+                "An error occurred while opening the file!"
+            );
+            match buf.load_file(&args[1]) {
+                Ok(_) => Some(PathBuf::from(args[1].clone())),
+                Err(e) => {
+                    dialog::alert(
+                        center().0 - 200,
+                        center().1 - 100,
+                        &format!("An issue occured while loading the file: {}", e),
+                    );
+                    None
                 }
             }
-            ParseEvent::Code(txt) => {
-                builder.push(&txt).font_family(FontFamily::MONOSPACE);
-                current_pos += txt.len();
+        } else {
+            None
+        };
+
+        // Handle drag and drop
+        editor.handle({
+            let mut dnd = false;
+            let mut released = false;
+            let buf = buf.clone();
+            move |_, ev| match ev {
+                Event::DndEnter => {
+                    dnd = true;
+                    true
+                }
+                Event::DndDrag => true,
+                Event::DndRelease => {
+                    released = true;
+                    true
+                }
+                Event::Paste => {
+                    if dnd && released {
+                        let path = app::event_text();
+                        let path = path.trim();
+                        let path = path.replace("file://", "");
+                        let path = std::path::PathBuf::from(&path);
+                        if path.exists() {
+                            // we use a timeout to avoid pasting the path into the buffer
+                            app::add_timeout3(0.0, {
+                                let mut buf = buf.clone();
+                                move |_| match buf.load_file(&path) {
+                                    Ok(_) => (),
+                                    Err(e) => dialog::alert(
+                                        center().0 - 200,
+                                        center().1 - 100,
+                                        &format!("An issue occured while loading the file: {}", e),
+                                    ),
+                                }
+                            });
+                        }
+                        dnd = false;
+                        released = false;
+                        true
+                    } else {
+                        false
+                    }
+                }
+                Event::DndLeave => {
+                    dnd = false;
+                    released = false;
+                    true
+                }
+                _ => false,
             }
-            ParseEvent::Html(txt) => {
-                builder
-                    .push(&txt)
-                    .font_family(FontFamily::MONOSPACE)
-                    .text_color(BLOCKQUOTE_COLOR);
-                current_pos += txt.len();
-            }
-            ParseEvent::HardBreak => {
-                builder.push("\n\n");
-                current_pos += 2;
-            }
-            _ => (),
+        });
+
+        // What shows when we attempt to print
+        let mut printable = text::TextDisplay::default();
+        printable.set_frame(FrameType::NoBox);
+        printable.set_scrollbar_size(0);
+        printable.set_buffer(Some(buf.clone()));
+
+        Self {
+            app,
+            modified,
+            filename,
+            r,
+            main_win,
+            menu,
+            buf,
+            editor,
+            printable,
         }
     }
-    builder.build()
-}
 
-fn add_newline_after_tag(tag: &Tag) -> bool {
-    !matches!(
-        tag,
-        Tag::Emphasis | Tag::Strong | Tag::Strikethrough | Tag::Link(..)
-    )
-}
+    /** Called by "Save", test if file can be written, otherwise call save_file_as()
+     * afterwards. Will return true if the file is succesfully saved. */
+    pub fn save_file(&mut self) -> Result<bool, Box<dyn error::Error>> {
+        match &self.filename {
+            Some(f) => {
+                self.buf.save_file(f)?;
+                self.modified = false;
+                self.menu
+                    .menu
+                    .find_item("&File/Save\t")
+                    .unwrap()
+                    .deactivate();
+                self.menu
+                    .menu
+                    .find_item("&File/Quit\t")
+                    .unwrap()
+                    .set_label_color(Color::Black);
+                let name = match &self.filename {
+                    Some(f) => f.to_string_lossy().to_string(),
+                    None => "(Untitled)".to_string(),
+                };
+                self.main_win.set_label(&format!("{} - RustyEd", name));
+                Ok(true)
+            }
+            None => self.save_file_as(),
+        }
+    }
 
-fn add_attribute_for_tag(tag: &Tag, mut attrs: AttributesAdder) {
-    match tag {
-        Tag::Heading(lvl, ..) => {
-            let font_size = match lvl {
-                HeadingLevel::H1 => 38.,
-                HeadingLevel::H2 => 32.0,
-                HeadingLevel::H3 => 26.0,
-                HeadingLevel::H4 => 20.0,
-                HeadingLevel::H5 => 16.0,
-                HeadingLevel::H6 => 12.0,
-            };
-            attrs.size(font_size).weight(FontWeight::BOLD);
+    /** Called by "Save As..." or by "Save" in case no file was set yet.
+     * Returns true if the file was succesfully saved. */
+    pub fn save_file_as(&mut self) -> Result<bool, Box<dyn error::Error>> {
+        let mut dlg = dialog::FileDialog::new(dialog::FileDialogType::BrowseSaveFile);
+        dlg.set_option(dialog::FileDialogOptions::SaveAsConfirm);
+        dlg.show();
+        if dlg.filename().to_string_lossy().to_string().is_empty() {
+            dialog::alert(center().0 - 200, center().1 - 100, "Please specify a file!");
+            return Ok(false);
         }
-        Tag::BlockQuote => {
-            attrs.style(FontStyle::Italic).text_color(BLOCKQUOTE_COLOR);
+        self.buf.save_file(&dlg.filename())?;
+        self.modified = false;
+        self.menu
+            .menu
+            .find_item("&File/Save\t")
+            .unwrap()
+            .deactivate();
+        self.menu
+            .menu
+            .find_item("&File/Quit\t")
+            .unwrap()
+            .set_label_color(Color::Black);
+        self.filename = Some(dlg.filename());
+        self.main_win
+            .set_label(&format!("{:?} - RustyEd", self.filename.as_ref().unwrap()));
+        Ok(true)
+    }
+
+    pub fn launch(&mut self) {
+        while self.app.wait() {
+            use Message::*;
+            if let Some(msg) = self.r.recv() {
+                match msg {
+                    Changed => {
+                        if !self.modified {
+                            self.modified = true;
+                            self.menu.menu.find_item("&File/Save\t").unwrap().activate();
+                            self.menu.menu.find_item("&File/Quit\t").unwrap().set_label_color(Color::Red);
+                            let name = match &self.filename {
+                                Some(f) => f.to_string_lossy().to_string(),
+                                None => "(Untitled)".to_string(),
+                            };
+                            self.main_win.set_label(&format!("* {} - RustyEd",name));
+                        }
+                    }
+                    New => {
+                        if self.buf.text() != "" {
+                            let clear = if let Some(x) = dialog::choice2(center().0 - 200, center().1 - 100, "File unsaved, Do you wish to continue?", "Yes", "No!", "") {
+                                x == 0
+                            } else {
+                                false
+                            };
+                            if clear {
+                                self.buf.set_text("");
+                            }
+                        }
+                    },
+                    Open => {
+                        let mut dlg = dialog::FileDialog::new(dialog::FileDialogType::BrowseFile);
+                        dlg.set_option(dialog::FileDialogOptions::NoOptions);
+                        dlg.set_filter("*.{txt,rs,toml}");
+                        dlg.show();
+                        let filename = dlg.filename();
+                        if !filename.to_string_lossy().to_string().is_empty() {
+                            if filename.exists() {
+                                match self.buf.load_file(&filename) {
+                                    Ok(_) => self.filename = Some(filename),
+                                    Err(e) => dialog::alert(center().0 - 200, center().1 - 100, &format!("An issue occured while loading the file: {}", e)),
+                                }
+                            } else {
+                                dialog::alert(center().0 - 200, center().1 - 100, "File does not exist!")
+                            }
+                        }
+                    },
+                    Save => { self.save_file().unwrap(); },
+                    SaveAs => { self.save_file_as().unwrap(); },
+                    Print => {
+                        let mut printer = printer::Printer::default();
+                        if printer.begin_job(0).is_ok() {
+                            let (w, h) = printer.printable_rect();
+                            self.printable.set_size(w - 40, h - 40);
+                            // Needs cleanup
+                            let line_count = self.printable.count_lines(0, self.printable.buffer().unwrap().length(), true) / 45;
+                            for i in 0..=line_count {
+                                self.printable.scroll(45 * i, 0);
+                                printer.begin_page().ok();
+                                printer.print_widget(&self.printable, 20, 20);
+                                printer.end_page().ok();
+                            }
+                            printer.end_job();
+                        }
+                    },
+                    Quit => {
+                        if self.modified {
+                            match dialog::choice2(center().0 - 200, center().1 - 100,
+                                "Would you like to save your work?", "Yes", "No", "") {
+                                Some(0) => {
+                                    if self.save_file().unwrap() {
+                                        self.app.quit();
+                                    }
+                                },
+                                Some(1) => { self.app.quit() },
+                                Some(_) | None  => (),
+                            }
+                        } else {
+                            self.app.quit();
+                        }
+                    },
+                    Cut => self.editor.cut(),
+                    Copy => self.editor.copy(),
+                    Paste => self.editor.paste(),
+                    About => dialog::message(center().0 - 300, center().1 - 100, "This is an example application written in Rust and using the FLTK Gui library."),
+                }
+            }
         }
-        Tag::CodeBlock(_) => {
-            attrs.font_family(FontFamily::MONOSPACE);
-        }
-        Tag::Emphasis => {
-            attrs.style(FontStyle::Italic);
-        }
-        Tag::Strong => {
-            attrs.weight(FontWeight::BOLD);
-        }
-        Tag::Strikethrough => {
-            attrs.strikethrough(true);
-        }
-        Tag::Link(_link_ty, target, _title) => {
-            attrs
-                .underline(true)
-                .text_color(LINK_COLOR)
-                .link(OPEN_LINK.with(target.to_string()));
-        }
-        // ignore other tags for now
-        _ => (),
     }
 }
 
-fn make_menu(_window_id: Option<WindowId>, _app_state: &AppState, _env: &Env) -> Menu<AppState> {
-    let menu = if cfg!(target_os = "macos") {
-        Menu::empty().entry(platform_menus::mac::application::default())
-    } else {
-        Menu::empty()
-    };
-    println!("test");
-    menu.entry(file_menu())
-}
-
-fn file_menu() -> Menu<AppState> {
-    Menu::new(LocalizedString::new("common-menu-file-menu"))
-        .entry(platform_menus::mac::file::new_file().enabled(false))
-        .entry(
-            MenuItem::new(LocalizedString::new("common-menu-file-open")).on_activate(
-                |ctx, _, _| {
-                    ctx.submit_command(
-                        commands::SHOW_OPEN_PANEL
-                            .with(FileDialogOptions::new().allowed_types(vec![MARKDOWN_FILE])),
-                    )
-                },
-            ),
-        )
-        .entry(
-            platform_menus::mac::file::save()
-                .enabled_if(|data: &AppState, _env: &Env| data.path.is_some()),
-        )
-        .entry(
-            MenuItem::new(LocalizedString::new("common-menu-file-save-as"))
-                .on_activate(|ctx, _, _| {
-                    ctx.submit_command(
-                        commands::SHOW_SAVE_PANEL
-                            .with(FileDialogOptions::new().allowed_types(vec![MARKDOWN_FILE])),
-                    )
-                })
-                .hotkey(SysMods::CmdShift, "S"),
-        )
+fn main() {
+    let args: Vec<_> = std::env::args().collect();
+    let mut app = MyApp::new(args);
+    app.launch();
 }
